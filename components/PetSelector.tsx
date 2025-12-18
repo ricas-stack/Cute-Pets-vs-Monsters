@@ -10,9 +10,9 @@ interface PetSelectorProps {
 
 export const PetSelector: React.FC<PetSelectorProps> = ({ energy, selectedPet, onSelect }) => {
   return (
-    <div className="bg-white/80 backdrop-blur-md rounded-2xl p-4 shadow-xl border-2 border-blue-100 flex flex-row lg:flex-col gap-3 justify-center items-center h-auto lg:h-full lg:w-32 overflow-x-auto lg:overflow-visible">
+    <div className="bg-white/80 backdrop-blur-md rounded-2xl p-3 shadow-xl border-2 border-blue-100 flex flex-row lg:flex-col gap-2 lg:gap-3 lg:justify-start items-center h-auto lg:h-full lg:w-32 overflow-x-auto lg:overflow-y-auto lg:overflow-x-hidden scrollbar-hide">
       
-      <div className="hidden lg:block text-center mb-2">
+      <div className="hidden lg:block text-center mb-1 flex-shrink-0">
         <h3 className="font-bold text-gray-700 text-sm">伙伴</h3>
         <p className="text-xs text-gray-500">点击选择</p>
       </div>
@@ -39,13 +39,17 @@ export const PetSelector: React.FC<PetSelectorProps> = ({ energy, selectedPet, o
             <span className="text-xs font-bold text-gray-700">{pet.cost}⚡</span>
             
             {/* Tooltip on hover (desktop only) */}
-            <div className="hidden lg:group-hover:block absolute left-full ml-2 w-40 bg-gray-800 text-white text-xs p-2 rounded z-50 pointer-events-none">
-              <p className="font-bold text-yellow-300">{pet.name}</p>
-              <p>{pet.description}</p>
+            <div className="hidden lg:group-hover:block absolute left-full ml-2 w-40 bg-gray-800 text-white text-xs p-2 rounded z-50 pointer-events-none text-left shadow-xl">
+              <p className="font-bold text-yellow-300 text-sm mb-1">{pet.name}</p>
+              <p className="leading-tight opacity-90">{pet.description}</p>
+              <p className="mt-1 text-xs opacity-75">生命: {pet.health} | 攻击: {pet.damage}</p>
             </div>
           </button>
         );
       })}
+      
+      {/* Spacer for bottom scrolling */}
+      <div className="hidden lg:block h-4 flex-shrink-0"></div>
     </div>
   );
 };

@@ -32,6 +32,14 @@
         width: 0px;
         background: transparent;
       }
+      /* Utility for hiding scrollbar but keeping functionality */
+      .scrollbar-hide {
+          -ms-overflow-style: none;  /* IE and Edge */
+          scrollbar-width: none;  /* Firefox */
+      }
+      .scrollbar-hide::-webkit-scrollbar {
+          display: none;
+      }
     </style>
   <script type="importmap">
 {

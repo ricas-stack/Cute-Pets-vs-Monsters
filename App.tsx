@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ROWS, COLS, GameState, Entity, PetType, EnemyType, Projectile, SunEntity, Explosion } from './types';
 import { PET_DATA, ENEMY_CONFIG, INITIAL_ENERGY as INIT_ENERGY_CONST, GAME_TICK_MS, ENERGY_DROP_VALUE, SUN_LIFETIME_MS, SUN_SCORE_VALUE, SUN_SPAWN_MIN_MS, SUN_SPAWN_MAX_MS, LEVEL_DURATION_MS, MAX_LEVELS, SPEED_INCREMENT } from './constants';
@@ -7,7 +8,7 @@ import { ProjectileComponent } from './components/ProjectileComponent';
 import { SunComponent } from './components/SunComponent';
 import { ExplosionComponent } from './components/ExplosionComponent';
 import { PetSelector } from './components/PetSelector';
-import { Star, Clock, Trophy, Target, Pause, Play } from 'lucide-react';
+import { Star, Clock, Trophy, Target, Pause, Play, Volume2, VolumeX } from 'lucide-react';
 
 const App: React.FC = () => {
   // Game State
@@ -26,6 +27,10 @@ const App: React.FC = () => {
   });
 
   const [selectedPet, setSelectedPet] = useState<PetType | null>(null);
+  const [isMuted, setIsMuted] = useState(false);
+  
+  // Audio Ref
+  const audioRef = useRef<HTMLAudioElement | null>(null);
   
   // Refs for mutable state in the game loop to avoid stale closures
   const stateRef = useRef(gameState);
@@ -42,6 +47,31 @@ const App: React.FC = () => {
   useEffect(() => {
     stateRef.current = gameState;
   }, [gameState]);
+
+  // Audio Setup
+  useEffect(() => {
+    // A playful, bouncy loop suitable for kids
+    const audio = new Audio('https://assets.mixkit.co/music/preview/mixkit-funny-game-loop-357.mp3');
+    audio.loop = true;
+    audio.volume = 0.3; // Set to a gentle volume
+    audioRef.current = audio;
+
+    return () => {
+      audio.pause();
+      audioRef.current = null;
+    };
+  }, []);
+
+  // Handle Audio Playback based on status
+  useEffect(() => {
+    if (!audioRef.current) return;
+
+    if (gameState.status === 'PLAYING' && !isMuted) {
+      audioRef.current.play().catch(e => console.log("Autoplay blocked or audio error:", e));
+    } else {
+      audioRef.current.pause();
+    }
+  }, [gameState.status, isMuted]);
 
   // Handle Resize for Cell Size
   useEffect(() => {
@@ -106,7 +136,6 @@ const App: React.FC = () => {
     }
 
     // --- 1. Spawn Enemies ---
-    // Only spawn if level is running
     if (nextStatus === 'PLAYING') {
         const spawnRate = Math.max(1000, 5000 - ((level - 1) * 800)); 
         if (now - lastSpawnTime.current > spawnRate) {
@@ -115,7 +144,6 @@ const App: React.FC = () => {
             if (level > 1) types.push(EnemyType.Fast);
             if (level > 2) types.push(EnemyType.Tank);
             const randomType = types[Math.floor(Math.random() * types.length)];
-            
             const config = ENEMY_CONFIG[randomType];
             
             const newEnemy: Entity = {
@@ -135,26 +163,21 @@ const App: React.FC = () => {
     }
 
     // --- 2. Update Enemies (Movement & Attack) ---
-    const levelSpeedMultiplier = 1 + ((level - 1) * SPEED_INCREMENT); // Increase 5% per level
-
+    const levelSpeedMultiplier = 1 + ((level - 1) * SPEED_INCREMENT);
     nextEnemies = nextEnemies.map(enemy => {
       let movedEnemy = { ...enemy };
-      
       const currentGridCol = Math.floor(movedEnemy.col);
       const petInCell = nextGrid[movedEnemy.row][currentGridCol];
       
       if (petInCell && Math.abs(movedEnemy.col - currentGridCol) < 0.5) {
         if (now - movedEnemy.lastActionTime > 1000) { 
-            const pet = { ...petInCell }; // Clone pet data
+            const pet = { ...petInCell };
             pet.health -= ENEMY_CONFIG[movedEnemy.type as EnemyType].damage;
             movedEnemy.lastActionTime = now;
             
             if (pet.health <= 0) {
                 if (pet.type === PetType.Explosive) {
-                    // BOOM! Damage enemy using the updated damage value
                     movedEnemy.health -= PET_DATA[PetType.Explosive].damage;
-                    
-                    // Trigger Explosion Visual
                     nextExplosions.push({
                         id: `exp-${now}-${movedEnemy.row}-${currentGridCol}`,
                         row: movedEnemy.row,
@@ -169,7 +192,6 @@ const App: React.FC = () => {
         }
       } else {
         const freezeMultiplier = movedEnemy.frozen ? 0.5 : 1;
-        // Apply level multiplier here
         const moveAmount = (movedEnemy.speed! * levelSpeedMultiplier * freezeMultiplier * (GAME_TICK_MS / 1000));
         movedEnemy.col -= moveAmount;
       }
@@ -180,15 +202,11 @@ const App: React.FC = () => {
         nextStatus = 'GAME_OVER';
     }
 
-    // --- 3. Global Sun Spawning (Randomly on pets) ---
+    // --- 3. Global Sun Spawning ---
     const allPets = nextGrid.flat().filter(p => p !== null) as Entity[];
-    
-    // Check if we have pets. If not, reset the timer to NOW, so the interval countdown 
-    // only effectively starts ticking once a pet is placed.
     if (allPets.length === 0) {
         lastGlobalSunSpawnTime.current = now;
     } else {
-        // Pets exist, check if it's time to spawn
         if (now - lastGlobalSunSpawnTime.current > nextGlobalSunInterval.current) {
             const randomPet = allPets[Math.floor(Math.random() * allPets.length)];
             nextSuns.push({
@@ -198,66 +216,36 @@ const App: React.FC = () => {
                 value: ENERGY_DROP_VALUE,
                 createdAt: now
             });
-            // Reset timer
             lastGlobalSunSpawnTime.current = now;
-            // Set next interval to random
             nextGlobalSunInterval.current = Math.floor(Math.random() * (SUN_SPAWN_MAX_MS - SUN_SPAWN_MIN_MS + 1)) + SUN_SPAWN_MIN_MS;
         }
     }
 
-    // --- 4. Update Pets (Shooting Logic) ---
+    // --- 4. Update Pets ---
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
-        let pet = nextGrid[r][c]; // Get reference
+        let pet = nextGrid[r][c];
         if (!pet) continue;
-        
         const petConfig = PET_DATA[pet.type as PetType];
-
-        // Check if pet can shoot (has damage > 0 and not explosive type which is passive)
         if (petConfig.damage > 0 && pet.type !== PetType.Explosive) {
              if (now - pet.lastActionTime > petConfig.attackRate) {
                  let didShoot = false;
-
-                 // Logic for normal pets (shoot right)
                  const enemiesRight = nextEnemies.some(e => e.row === r && e.col > c);
-                 
-                 // Logic for DualShooter
                  const isDual = pet.type === PetType.DualShooter;
                  const enemiesLeft = nextEnemies.some(e => e.row === r && e.col < c);
 
                  if (enemiesRight || (isDual && enemiesLeft)) {
-                     // Determine projectile variant
                      let variant: 'bone' | 'ice' | 'fire' = 'bone';
                      if (pet.type === PetType.Slower) variant = 'ice';
                      if (pet.type === PetType.DualShooter) variant = 'fire';
-                     if (pet.type === PetType.Wall) variant = 'bone'; // Wall shoots stones/bones
-
-                     // Shoot Right
-                     if (enemiesRight || (isDual && !enemiesLeft)) { // Shoot right if enemy there, or dual default
-                        nextProjectiles.push({
-                            id: `proj-${now}-${r}-${c}-R`,
-                            row: r,
-                            x: c + 0.5,
-                            damage: petConfig.damage,
-                            variant: variant,
-                            direction: 1
-                        });
+                     if (enemiesRight || (isDual && !enemiesLeft)) {
+                        nextProjectiles.push({ id: `proj-${now}-${r}-${c}-R`, row: r, x: c + 0.5, damage: petConfig.damage, variant: variant, direction: 1 });
                         didShoot = true;
                      }
-
-                     // Shoot Left (only DualShooter)
                      if (isDual && enemiesLeft) {
-                        nextProjectiles.push({
-                            id: `proj-${now}-${r}-${c}-L`,
-                            row: r,
-                            x: c - 0.5,
-                            damage: petConfig.damage,
-                            variant: variant,
-                            direction: -1
-                        });
+                        nextProjectiles.push({ id: `proj-${now}-${r}-${c}-L`, row: r, x: c - 0.5, damage: petConfig.damage, variant: variant, direction: -1 });
                         didShoot = true;
                      }
-
                      if (didShoot) {
                         pet = { ...pet, lastActionTime: now };
                         nextGrid[r][c] = pet;
@@ -272,15 +260,12 @@ const App: React.FC = () => {
     const projectileSpeed = 6; 
     const moveProjBase = projectileSpeed * (GAME_TICK_MS / 1000);
     let activeProjectiles: Projectile[] = [];
-    
     nextProjectiles.forEach(p => {
         let currentP = { ...p };
         currentP.x += moveProjBase * currentP.direction;
-        
         let hit = false;
         for (let i = 0; i < nextEnemies.length; i++) {
             const enemy = nextEnemies[i];
-            // Check collision. Since projectile can move left, we just check overlap distance
             if (enemy.row === currentP.row && Math.abs(enemy.col - currentP.x) < 0.5) {
                 enemy.health -= currentP.damage;
                 if (currentP.variant === 'ice') enemy.frozen = true;
@@ -288,59 +273,30 @@ const App: React.FC = () => {
                 break; 
             }
         }
-        
-        // Keep projectile if it hasn't hit and is inside bounds
-        if (!hit && currentP.x >= 0 && currentP.x < COLS) {
-            activeProjectiles.push(currentP);
-        }
+        if (!hit && currentP.x >= 0 && currentP.x < COLS) activeProjectiles.push(currentP);
     });
-    
     nextProjectiles = activeProjectiles;
 
-    // --- 6. Cleanup Suns & Explosions ---
+    // --- 6. Cleanup ---
     nextSuns = nextSuns.filter(s => now - s.createdAt < SUN_LIFETIME_MS);
-    nextExplosions = nextExplosions.filter(e => now - e.createdAt < 500); // Explosion lasts 500ms
+    nextExplosions = nextExplosions.filter(e => now - e.createdAt < 500);
 
     setGameState({
         ...currentState,
-        grid: nextGrid,
-        enemies: nextEnemies,
-        projectiles: nextProjectiles,
-        suns: nextSuns,
-        explosions: nextExplosions,
-        energy: nextEnergy,
-        score: nextScore,
-        status: nextStatus,
-        timeRemaining: nextTimeRemaining
+        grid: nextGrid, enemies: nextEnemies, projectiles: nextProjectiles, suns: nextSuns, explosions: nextExplosions, energy: nextEnergy, score: nextScore, status: nextStatus, timeRemaining: nextTimeRemaining
     });
   };
 
   const handleCellClick = (r: number, c: number) => {
       if (gameState.status !== 'PLAYING') return;
       if (!selectedPet) return;
-      
       const currentState = stateRef.current;
-      if (currentState.grid[r][c]) return; // Occupied
-
+      if (currentState.grid[r][c]) return;
       const petConfig = PET_DATA[selectedPet];
       if (currentState.energy >= petConfig.cost) {
           const newGrid = currentState.grid.map(row => [...row]);
-          newGrid[r][c] = {
-              id: `pet-${Date.now()}`,
-              row: r,
-              col: c,
-              health: petConfig.health,
-              maxHealth: petConfig.health,
-              type: selectedPet,
-              isEnemy: false,
-              lastActionTime: performance.now()
-          };
-          
-          setGameState(prev => ({
-              ...prev,
-              grid: newGrid,
-              energy: prev.energy - petConfig.cost
-          }));
+          newGrid[r][c] = { id: `pet-${Date.now()}`, row: r, col: c, health: petConfig.health, maxHealth: petConfig.health, type: selectedPet, isEnemy: false, lastActionTime: performance.now() };
+          setGameState(prev => ({ ...prev, grid: newGrid, energy: prev.energy - petConfig.cost }));
           setSelectedPet(null);
       }
   };
@@ -349,29 +305,14 @@ const App: React.FC = () => {
     setGameState(prev => {
       const sun = prev.suns.find(s => s.id === id);
       if (!sun) return prev;
-      
-      return {
-        ...prev,
-        energy: prev.energy + sun.value,
-        score: prev.score + SUN_SCORE_VALUE, // Collecting sun now gives 50 score
-        suns: prev.suns.filter(s => s.id !== id)
-      };
+      return { ...prev, energy: prev.energy + sun.value, score: prev.score + SUN_SCORE_VALUE, suns: prev.suns.filter(s => s.id !== id) };
     });
   };
 
   const startGame = () => {
       setGameState({
         grid: Array(ROWS).fill(null).map(() => Array(COLS).fill(null)),
-        enemies: [],
-        projectiles: [],
-        suns: [],
-        explosions: [],
-        energy: INIT_ENERGY_CONST,
-        level: 1,
-        timeRemaining: LEVEL_DURATION_MS,
-        score: 0,
-        status: 'PLAYING',
-        message: '怪物来了！保护家园！'
+        enemies: [], projectiles: [], suns: [], explosions: [], energy: INIT_ENERGY_CONST, level: 1, timeRemaining: LEVEL_DURATION_MS, score: 0, status: 'PLAYING', message: '怪物来了！保护家园！'
       });
       lastSpawnTime.current = performance.now();
       lastTickTime.current = performance.now();
@@ -380,19 +321,8 @@ const App: React.FC = () => {
 
   const nextLevel = () => {
       setGameState(prev => ({
-          ...prev,
-          grid: Array(ROWS).fill(null).map(() => Array(COLS).fill(null)), // Reset grid
-          enemies: [], // Clear enemies
-          projectiles: [], // Clear projectiles
-          suns: [], // Clear suns
-          explosions: [], // Clear explosions
-          energy: INIT_ENERGY_CONST, // Reset energy
-          level: prev.level + 1,
-          timeRemaining: LEVEL_DURATION_MS,
-          status: 'PLAYING',
-          message: `第 ${prev.level + 1} 关`
+          ...prev, grid: Array(ROWS).fill(null).map(() => Array(COLS).fill(null)), enemies: [], projectiles: [], suns: [], explosions: [], energy: INIT_ENERGY_CONST, level: prev.level + 1, timeRemaining: LEVEL_DURATION_MS, status: 'PLAYING', message: `第 ${prev.level + 1} 关`
       }));
-      // Reset timers for smooth start
       lastSpawnTime.current = performance.now();
       lastGlobalSunSpawnTime.current = performance.now();
       lastTickTime.current = performance.now();
@@ -400,180 +330,94 @@ const App: React.FC = () => {
 
   const togglePause = () => {
       if (gameState.status === 'PLAYING') {
-          // Pause
           setGameState(prev => ({ ...prev, status: 'PAUSED' }));
           pauseStartTime.current = performance.now();
       } else if (gameState.status === 'PAUSED') {
-          // Resume
           const now = performance.now();
           const pausedDuration = now - pauseStartTime.current;
-          
-          // Shift all time-based references forward
-          lastTickTime.current = now; // Reset tick time to now to avoid huge delta
+          lastTickTime.current = now;
           lastSpawnTime.current += pausedDuration;
           lastGlobalSunSpawnTime.current += pausedDuration;
-          
-          // Shift action times for all entities to prevent instant attacks if they were cooling down
           setGameState(prev => {
-              const adjustedGrid = prev.grid.map(row => row.map(cell => {
-                  if (cell) {
-                      return { ...cell, lastActionTime: cell.lastActionTime + pausedDuration };
-                  }
-                  return cell;
-              }));
-              const adjustedEnemies = prev.enemies.map(e => ({
-                  ...e,
-                  lastActionTime: e.lastActionTime + pausedDuration
-              }));
-              
-              return {
-                  ...prev,
-                  grid: adjustedGrid,
-                  enemies: adjustedEnemies,
-                  status: 'PLAYING'
-              };
+              const adjustedGrid = prev.grid.map(row => row.map(cell => cell ? { ...cell, lastActionTime: cell.lastActionTime + pausedDuration } : cell));
+              const adjustedEnemies = prev.enemies.map(e => ({ ...e, lastActionTime: e.lastActionTime + pausedDuration }));
+              return { ...prev, grid: adjustedGrid, enemies: adjustedEnemies, status: 'PLAYING' };
           });
       }
   };
 
   const formatTime = (ms: number) => {
       const seconds = Math.floor(ms / 1000);
-      const m = Math.floor(seconds / 60);
-      const s = seconds % 60;
-      return `${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+      return `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
   };
 
   return (
     <div className="w-full h-screen bg-sky-100 flex flex-col overflow-hidden relative select-none">
-        {/* Header */}
-        <header className="flex-none h-16 bg-white/50 backdrop-blur-md border-b border-white/60 flex items-center justify-between px-6 z-30">
-            <h1 className="text-xl md:text-2xl font-black text-sky-600 tracking-tight flex items-center gap-2">
-                🐶 萌宠大战怪物 👾
+        <header className="flex-none h-16 bg-white/50 backdrop-blur-md border-b border-white/60 flex items-center justify-between px-3 sm:px-6 z-30 gap-2">
+            <h1 className="text-base sm:text-xl md:text-2xl font-black text-sky-600 tracking-tight flex items-center gap-1 sm:gap-2 flex-shrink-0 whitespace-nowrap overflow-hidden">
+                <span className="hidden sm:inline">🐶</span> 萌宠大战怪物 <span className="hidden sm:inline">👾</span>
             </h1>
             
-            {/* Game Info Bar */}
-            <div className="flex items-center gap-3 md:gap-6">
-                 {/* Pause Button */}
+            <div className="flex items-center gap-1.5 sm:gap-3 md:gap-6 flex-shrink-0">
+                 {/* Music Toggle */}
+                 <Button 
+                    onClick={() => setIsMuted(!isMuted)} 
+                    className="!p-1.5 sm:!p-2 !rounded-full !h-8 !w-8 sm:!h-10 sm:!w-10 flex items-center justify-center !bg-sky-100/50 hover:!bg-sky-200/50 !border-none !shadow-none"
+                 >
+                    {isMuted ? <VolumeX className="w-4 h-4 sm:w-5 sm:h-5 text-gray-400"/> : <Volume2 className="w-4 h-4 sm:w-5 sm:h-5 text-sky-500 animate-pulse-short"/>}
+                 </Button>
+
                  {(gameState.status === 'PLAYING' || gameState.status === 'PAUSED') && (
                      <Button 
                         onClick={togglePause} 
-                        className="!p-2 !rounded-full !h-10 !w-10 flex items-center justify-center" 
+                        className="!p-1.5 sm:!p-2 !rounded-full !h-8 !w-8 sm:!h-10 sm:!w-10 flex items-center justify-center" 
                         variant="secondary"
                      >
-                        {gameState.status === 'PAUSED' ? <Play className="fill-current w-5 h-5"/> : <Pause className="fill-current w-5 h-5"/>}
+                        {gameState.status === 'PAUSED' ? <Play className="fill-current w-4 h-4 sm:w-5 sm:h-5"/> : <Pause className="fill-current w-4 h-4 sm:w-5 sm:h-5"/>}
                      </Button>
                  )}
 
-                 <div className="flex items-center gap-2 text-gray-700 font-bold bg-white/60 px-3 py-1 rounded-lg">
-                    <Trophy className="w-5 h-5 text-purple-500" />
-                    <span className="whitespace-nowrap">第 {gameState.level}/{MAX_LEVELS} 关</span>
+                 <div className="flex items-center gap-1 sm:gap-2 text-gray-700 font-bold bg-white/60 px-2 sm:px-3 py-1 rounded-lg text-xs sm:text-sm md:text-base">
+                    <Trophy className="w-3.5 h-3.5 sm:w-5 h-5 text-purple-500" />
+                    <span className="whitespace-nowrap">第 {gameState.level} 关</span>
                  </div>
 
-                 <div className="flex items-center gap-2 text-gray-700 font-bold bg-white/60 px-3 py-1 rounded-lg w-24 justify-center">
-                    <Clock className="w-5 h-5 text-blue-500" />
+                 <div className="flex items-center gap-1 sm:gap-2 text-gray-700 font-bold bg-white/60 px-2 sm:px-3 py-1 rounded-lg w-16 sm:w-24 justify-center text-xs sm:text-sm md:text-base">
+                    <Clock className="w-3.5 h-3.5 sm:w-5 h-5 text-blue-500" />
                     <span className="font-mono">{formatTime(gameState.timeRemaining)}</span>
                  </div>
 
-                 <div className="flex items-center gap-1 bg-yellow-400 text-yellow-900 px-3 py-1 rounded-full font-bold shadow-sm animate-pulse-short">
-                    <Star className="w-4 h-4 fill-current" />
+                 <div className="flex items-center gap-1 bg-yellow-400 text-yellow-900 px-2 sm:px-3 py-1 rounded-full font-bold shadow-sm animate-pulse-short text-xs sm:text-sm md:text-base">
+                    <Star className="w-3 h-3 sm:w-4 h-4 fill-current" />
                     <span>{Math.floor(gameState.energy)}</span>
                  </div>
                  
-                 {/* Hide score on very small screens if needed */}
                  {(gameState.status === 'PLAYING' || gameState.status === 'PAUSED') && (
                      <div className="hidden lg:block font-mono text-gray-600">分数: {gameState.score}</div>
                  )}
             </div>
         </header>
 
-        {/* Main Content */}
         <div className="flex-1 flex flex-col lg:flex-row overflow-hidden relative">
-            
-            {/* Sidebar */}
             <div className="order-2 lg:order-1 flex-none p-2 z-20 w-full lg:w-auto flex justify-center lg:block bg-white/30">
-                <PetSelector 
-                    energy={gameState.energy} 
-                    selectedPet={selectedPet} 
-                    onSelect={setSelectedPet} 
-                />
+                <PetSelector energy={gameState.energy} selectedPet={selectedPet} onSelect={setSelectedPet} />
             </div>
 
-            {/* Game Board */}
             <div className="order-1 lg:order-2 flex-1 relative overflow-auto flex items-center justify-center p-4 bg-pattern">
-                 <div className="absolute inset-0 opacity-10 pointer-events-none" style={{
-                     backgroundImage: 'radial-gradient(#444 1px, transparent 1px)',
-                     backgroundSize: '20px 20px'
-                 }}></div>
-
-                 <div 
-                    ref={boardRef}
-                    className="relative bg-green-500/10 rounded-3xl border-4 border-green-500/30 shadow-2xl overflow-hidden"
-                    style={{
-                        width: `${COLS * cellSize}px`,
-                        height: `${ROWS * cellSize}px`,
-                        minWidth: `${COLS * cellSize}px`
-                    }}
-                 >
-                     {/* Grid Lines */}
-                     {Array.from({ length: ROWS }).map((_, r) => (
-                         <div key={`row-${r}`} className="absolute w-full border-b border-green-700/10" style={{ top: `${(r + 1) * cellSize}px` }} />
-                     ))}
-                     {Array.from({ length: COLS }).map((_, c) => (
-                         <div key={`col-${c}`} className="absolute h-full border-r border-green-700/10" style={{ left: `${(c + 1) * cellSize}px` }} />
-                     ))}
-
-                     {/* Grid Cells */}
-                     {gameState.grid.map((row, r) => (
-                         row.map((cell, c) => (
-                             <div
-                                key={`${r}-${c}`}
-                                onClick={() => handleCellClick(r, c)}
-                                className={`absolute transition-colors duration-200 cursor-pointer 
-                                    ${!cell && selectedPet && gameState.energy >= PET_DATA[selectedPet].cost ? 'hover:bg-green-400/30' : ''}
-                                `}
-                                style={{
-                                    width: cellSize,
-                                    height: cellSize,
-                                    top: r * cellSize,
-                                    left: c * cellSize
-                                }}
-                             />
-                         ))
-                     ))}
-
-                     {/* Entities */}
-                     {gameState.grid.flat().map((entity) => (
-                         entity && <EntityComponent key={entity.id} entity={entity} cellSize={cellSize} />
-                     ))}
-                     {gameState.enemies.map(enemy => (
-                         <EntityComponent key={enemy.id} entity={enemy} cellSize={cellSize} />
-                     ))}
-
-                     {/* Suns */}
-                     {gameState.suns.map(sun => (
-                         <SunComponent 
-                            key={sun.id} 
-                            sun={sun} 
-                            cellSize={cellSize} 
-                            onClick={handleCollectSun}
-                         />
-                     ))}
-
-                     {/* Explosions */}
-                     {gameState.explosions.map(exp => (
-                         <ExplosionComponent key={exp.id} explosion={exp} cellSize={cellSize} />
-                     ))}
-
-                     {/* Projectiles */}
-                     {gameState.projectiles.map(proj => (
-                         <ProjectileComponent key={proj.id} projectile={proj} cellSize={cellSize} />
-                     ))}
-
+                 <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: 'radial-gradient(#444 1px, transparent 1px)', backgroundSize: '20px 20px' }}></div>
+                 <div ref={boardRef} className="relative bg-green-500/10 rounded-3xl border-4 border-green-500/30 shadow-2xl overflow-hidden" style={{ width: `${COLS * cellSize}px`, height: `${ROWS * cellSize}px`, minWidth: `${COLS * cellSize}px` }}>
+                     {Array.from({ length: ROWS }).map((_, r) => ( <div key={`row-${r}`} className="absolute w-full border-b border-green-700/10" style={{ top: `${(r + 1) * cellSize}px` }} /> ))}
+                     {Array.from({ length: COLS }).map((_, c) => ( <div key={`col-${c}`} className="absolute h-full border-r border-green-700/10" style={{ left: `${(c + 1) * cellSize}px` }} /> ))}
+                     {gameState.grid.map((row, r) => ( row.map((cell, c) => ( <div key={`${r}-${c}`} onClick={() => handleCellClick(r, c)} className={`absolute transition-colors duration-200 cursor-pointer ${!cell && selectedPet && gameState.energy >= PET_DATA[selectedPet].cost ? 'hover:bg-green-400/30' : ''}`} style={{ width: cellSize, height: cellSize, top: r * cellSize, left: c * cellSize }} /> )) ))}
+                     {gameState.grid.flat().map((entity) => ( entity && <EntityComponent key={entity.id} entity={entity} cellSize={cellSize} /> ))}
+                     {gameState.enemies.map(enemy => ( <EntityComponent key={enemy.id} entity={enemy} cellSize={cellSize} /> ))}
+                     {gameState.suns.map(sun => ( <SunComponent key={sun.id} sun={sun} cellSize={cellSize} onClick={handleCollectSun} /> ))}
+                     {gameState.explosions.map(exp => ( <ExplosionComponent key={exp.id} explosion={exp} cellSize={cellSize} /> ))}
+                     {gameState.projectiles.map(proj => ( <ProjectileComponent key={proj.id} projectile={proj} cellSize={cellSize} /> ))}
                  </div>
             </div>
         </div>
 
-        {/* Overlay Screens */}
         {gameState.status === 'START' && (
             <div className="absolute inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-center justify-center">
                 <div className="bg-white p-8 rounded-3xl shadow-2xl text-center max-w-md mx-4 animate-bounce-in">
@@ -593,7 +437,6 @@ const App: React.FC = () => {
             </div>
         )}
 
-        {/* Pause Overlay */}
         {gameState.status === 'PAUSED' && (
             <div className="absolute inset-0 z-40 bg-black/20 backdrop-blur-sm flex items-center justify-center">
                 <div className="bg-white p-6 rounded-3xl shadow-2xl text-center animate-bounce-in">
