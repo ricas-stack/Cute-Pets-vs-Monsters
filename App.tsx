@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ROWS, COLS, GameState, Entity, PetType, EnemyType, Projectile, SunEntity, Explosion } from './types';
 import { PET_DATA, ENEMY_CONFIG, INITIAL_ENERGY as INIT_ENERGY_CONST, GAME_TICK_MS, ENERGY_DROP_VALUE, SUN_LIFETIME_MS, SUN_SCORE_VALUE, SUN_SPAWN_MIN_MS, SUN_SPAWN_MAX_MS, LEVEL_DURATION_MS, MAX_LEVELS, SPEED_INCREMENT } from './constants';
@@ -8,7 +7,15 @@ import { ProjectileComponent } from './components/ProjectileComponent';
 import { SunComponent } from './components/SunComponent';
 import { ExplosionComponent } from './components/ExplosionComponent';
 import { PetSelector } from './components/PetSelector';
-import { Star, Clock, Trophy, Target, Pause, Play, Volume2, VolumeX } from 'lucide-react';
+import { Star, Trophy, Pause, Play, Volume2, VolumeX } from 'lucide-react';
+
+// 联网备用背景音乐列表 - 风格贴近用户提供的 Soundstripe 链接 (欢快、趣味的游戏循环)
+const FALLBACK_PLAYLIST = [
+  'https://assets.mixkit.co/music/preview/mixkit-funny-game-loop-357.mp3',
+  'https://assets.mixkit.co/music/preview/mixkit-happy-puzzler-loop-452.mp3',
+  'https://assets.mixkit.co/music/preview/mixkit-game-level-music-689.mp3',
+  'https://assets.mixkit.co/music/preview/mixkit-fun-and-games-6.mp3'
+];
 
 const App: React.FC = () => {
   // Game State
@@ -29,16 +36,17 @@ const App: React.FC = () => {
   const [selectedPet, setSelectedPet] = useState<PetType | null>(null);
   const [isMuted, setIsMuted] = useState(false);
   
-  // Audio Ref
+  // Audio Refs
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUnlocked = useRef(false);
   
-  // Refs for mutable state in the game loop to avoid stale closures
+  // Refs for logic consistency
   const stateRef = useRef(gameState);
   const lastSpawnTime = useRef(0);
   const lastGlobalSunSpawnTime = useRef(0);
-  const nextGlobalSunInterval = useRef(2904); // Initial 2.904s wait
+  const nextGlobalSunInterval = useRef(3000);
   const lastTickTime = useRef(0);
-  const pauseStartTime = useRef(0); // Track when pause started
+  const pauseStartTime = useRef(0);
   const animationFrameId = useRef<number>(0);
   const boardRef = useRef<HTMLDivElement>(null);
   const [cellSize, setCellSize] = useState(80);
@@ -48,45 +56,70 @@ const App: React.FC = () => {
     stateRef.current = gameState;
   }, [gameState]);
 
-  // Audio Setup
+  // Unified Audio Management with Random Fallback
   useEffect(() => {
-    // A playful, bouncy loop suitable for kids
-    const audio = new Audio('https://assets.mixkit.co/music/preview/mixkit-funny-game-loop-357.mp3');
+    const audio = new Audio();
     audio.loop = true;
-    audio.volume = 0.3; // Set to a gentle volume
+    audio.volume = 0.4;
+    
+    // 优先尝试加载本地上传的音乐
+    audio.src = './bgm.mp3';
+    
+    const handleAudioError = () => {
+      // 如果本地 bgm.mp3 加载失败，从播放列表中随机选取一个链接
+      if (audio.src && audio.src.includes('bgm.mp3')) {
+        console.warn("本地音频 './bgm.mp3' 加载失败，正在随机选择一个联网备用音乐...");
+        const randomUrl = FALLBACK_PLAYLIST[Math.floor(Math.random() * FALLBACK_PLAYLIST.length)];
+        audio.src = randomUrl;
+        audio.load();
+        
+        // 如果用户已经点击过开始，尝试自动恢复播放
+        if (audioUnlocked.current && !isMuted) {
+          audio.play().catch(e => console.log("备用音乐播放失败:", e));
+        }
+      }
+    };
+
+    audio.addEventListener('error', handleAudioError);
     audioRef.current = audio;
 
     return () => {
+      audio.removeEventListener('error', handleAudioError);
       audio.pause();
       audioRef.current = null;
     };
   }, []);
 
-  // Handle Audio Playback based on status
+  // Sync Mute state with Audio element
   useEffect(() => {
-    if (!audioRef.current) return;
-
-    if (gameState.status === 'PLAYING' && !isMuted) {
-      audioRef.current.play().catch(e => console.log("Autoplay blocked or audio error:", e));
-    } else {
-      audioRef.current.pause();
+    const audio = audioRef.current;
+    if (audio) {
+      audio.muted = isMuted;
+      if (!isMuted && gameState.status === 'PLAYING' && audioUnlocked.current) {
+        audio.play().catch(() => {});
+      }
     }
-  }, [gameState.status, isMuted]);
+  }, [isMuted, gameState.status]);
 
-  // Handle Resize for Cell Size
+  // Handle Resize for Responsive Board
   useEffect(() => {
     const handleResize = () => {
       if (boardRef.current) {
-        // Calculate cell size based on container width, max 90px
-        const width = boardRef.current.clientWidth;
-        const calculated = Math.min(90, width / COLS);
-        setCellSize(calculated);
+        const parent = boardRef.current.parentElement;
+        if (parent) {
+          const parentWidth = parent.clientWidth - 32;
+          const calculated = Math.max(65, Math.min(90, parentWidth / COLS));
+          setCellSize(calculated);
+        }
       }
     };
-    
     window.addEventListener('resize', handleResize);
     handleResize();
-    return () => window.removeEventListener('resize', handleResize);
+    const timer = setTimeout(handleResize, 300);
+    return () => {
+      window.removeEventListener('resize', handleResize);
+      clearTimeout(timer);
+    };
   }, []);
 
   // Game Loop
@@ -96,17 +129,20 @@ const App: React.FC = () => {
        return;
     }
 
-    const deltaTime = timestamp - lastTickTime.current;
-    
+    if (lastTickTime.current === 0) {
+      lastTickTime.current = timestamp;
+    }
+
+    let deltaTime = timestamp - lastTickTime.current;
+    if (deltaTime > 100) deltaTime = 100; // Protection against background tab jumps
+
     if (deltaTime >= GAME_TICK_MS) {
       lastTickTime.current = timestamp;
       updateGameLogic(timestamp, deltaTime);
     }
-    
     animationFrameId.current = requestAnimationFrame(gameLoop);
   }, []);
 
-  // Start/Stop Loop
   useEffect(() => {
     animationFrameId.current = requestAnimationFrame(gameLoop);
     return () => cancelAnimationFrame(animationFrameId.current);
@@ -125,19 +161,15 @@ const App: React.FC = () => {
     let nextStatus = status;
     let nextTimeRemaining = timeRemaining - deltaTime;
 
-    // --- 0. Level/Timer Logic ---
     if (nextTimeRemaining <= 0) {
         nextTimeRemaining = 0;
-        if (level >= MAX_LEVELS) {
-            nextStatus = 'VICTORY';
-        } else {
-            nextStatus = 'LEVEL_COMPLETE';
-        }
+        if (level >= MAX_LEVELS) nextStatus = 'VICTORY';
+        else nextStatus = 'LEVEL_COMPLETE';
     }
 
-    // --- 1. Spawn Enemies ---
+    // Spawn Enemy
     if (nextStatus === 'PLAYING') {
-        const spawnRate = Math.max(1000, 5000 - ((level - 1) * 800)); 
+        const spawnRate = Math.max(1200, 5000 - ((level - 1) * 900)); 
         if (now - lastSpawnTime.current > spawnRate) {
             const randomRow = Math.floor(Math.random() * ROWS);
             const types = [EnemyType.Normal];
@@ -145,8 +177,7 @@ const App: React.FC = () => {
             if (level > 2) types.push(EnemyType.Tank);
             const randomType = types[Math.floor(Math.random() * types.length)];
             const config = ENEMY_CONFIG[randomType];
-            
-            const newEnemy: Entity = {
+            nextEnemies.push({
                 id: `enemy-${now}`,
                 row: randomRow,
                 col: COLS - 1,
@@ -156,13 +187,12 @@ const App: React.FC = () => {
                 isEnemy: true,
                 lastActionTime: 0,
                 speed: config.speed,
-            };
-            nextEnemies.push(newEnemy);
+            });
             lastSpawnTime.current = now;
         }
     }
 
-    // --- 2. Update Enemies (Movement & Attack) ---
+    // Movement & Collision
     const levelSpeedMultiplier = 1 + ((level - 1) * SPEED_INCREMENT);
     nextEnemies = nextEnemies.map(enemy => {
       let movedEnemy = { ...enemy };
@@ -174,98 +204,68 @@ const App: React.FC = () => {
             const pet = { ...petInCell };
             pet.health -= ENEMY_CONFIG[movedEnemy.type as EnemyType].damage;
             movedEnemy.lastActionTime = now;
-            
             if (pet.health <= 0) {
                 if (pet.type === PetType.Explosive) {
                     movedEnemy.health -= PET_DATA[PetType.Explosive].damage;
-                    nextExplosions.push({
-                        id: `exp-${now}-${movedEnemy.row}-${currentGridCol}`,
-                        row: movedEnemy.row,
-                        col: currentGridCol,
-                        createdAt: now
-                    });
+                    nextExplosions.push({ id: `exp-${now}-${movedEnemy.row}-${currentGridCol}`, row: movedEnemy.row, col: currentGridCol, createdAt: now });
                 }
                 nextGrid[movedEnemy.row][currentGridCol] = null;
-            } else {
-                nextGrid[movedEnemy.row][currentGridCol] = pet;
-            }
+            } else nextGrid[movedEnemy.row][currentGridCol] = pet;
         }
       } else {
-        const freezeMultiplier = movedEnemy.frozen ? 0.5 : 1;
-        const moveAmount = (movedEnemy.speed! * levelSpeedMultiplier * freezeMultiplier * (GAME_TICK_MS / 1000));
+        const moveAmount = (movedEnemy.speed! * levelSpeedMultiplier * (movedEnemy.frozen ? 0.5 : 1) * (deltaTime / 1000));
         movedEnemy.col -= moveAmount;
       }
       return movedEnemy;
     }).filter(e => e.health > 0);
 
-    if (nextEnemies.some(e => e.col < 0)) {
-        nextStatus = 'GAME_OVER';
-    }
+    if (nextEnemies.some(e => e.col < 0)) nextStatus = 'GAME_OVER';
 
-    // --- 3. Global Sun Spawning ---
+    // Global Sun Drop
     const allPets = nextGrid.flat().filter(p => p !== null) as Entity[];
-    if (allPets.length === 0) {
+    if (allPets.length > 0 && now - lastGlobalSunSpawnTime.current > nextGlobalSunInterval.current) {
+        const randomPet = allPets[Math.floor(Math.random() * allPets.length)];
+        nextSuns.push({ id: `sun-${now}-${randomPet.row}-${randomPet.col}`, row: randomPet.row, col: randomPet.col, value: ENERGY_DROP_VALUE, createdAt: now });
         lastGlobalSunSpawnTime.current = now;
-    } else {
-        if (now - lastGlobalSunSpawnTime.current > nextGlobalSunInterval.current) {
-            const randomPet = allPets[Math.floor(Math.random() * allPets.length)];
-            nextSuns.push({
-                id: `sun-${now}-${randomPet.row}-${randomPet.col}`,
-                row: randomPet.row,
-                col: randomPet.col,
-                value: ENERGY_DROP_VALUE,
-                createdAt: now
-            });
-            lastGlobalSunSpawnTime.current = now;
-            nextGlobalSunInterval.current = Math.floor(Math.random() * (SUN_SPAWN_MAX_MS - SUN_SPAWN_MIN_MS + 1)) + SUN_SPAWN_MIN_MS;
-        }
+        nextGlobalSunInterval.current = Math.floor(Math.random() * (SUN_SPAWN_MAX_MS - SUN_SPAWN_MIN_MS + 1)) + SUN_SPAWN_MIN_MS;
     }
 
-    // --- 4. Update Pets ---
+    // Combat Logic
     for (let r = 0; r < ROWS; r++) {
       for (let c = 0; c < COLS; c++) {
         let pet = nextGrid[r][c];
         if (!pet) continue;
         const petConfig = PET_DATA[pet.type as PetType];
-        if (petConfig.damage > 0 && pet.type !== PetType.Explosive) {
-             if (now - pet.lastActionTime > petConfig.attackRate) {
-                 let didShoot = false;
-                 const enemiesRight = nextEnemies.some(e => e.row === r && e.col > c);
-                 const isDual = pet.type === PetType.DualShooter;
-                 const enemiesLeft = nextEnemies.some(e => e.row === r && e.col < c);
+        if (petConfig.damage > 0 && pet.type !== PetType.Explosive && now - pet.lastActionTime > petConfig.attackRate) {
+            const enemiesRight = nextEnemies.some(e => e.row === r && e.col > c);
+            const isDual = pet.type === PetType.DualShooter;
+            const enemiesLeft = nextEnemies.some(e => e.row === r && e.col < c);
 
-                 if (enemiesRight || (isDual && enemiesLeft)) {
-                     let variant: 'bone' | 'ice' | 'fire' = 'bone';
-                     if (pet.type === PetType.Slower) variant = 'ice';
-                     if (pet.type === PetType.DualShooter) variant = 'fire';
-                     if (enemiesRight || (isDual && !enemiesLeft)) {
-                        nextProjectiles.push({ id: `proj-${now}-${r}-${c}-R`, row: r, x: c + 0.5, damage: petConfig.damage, variant: variant, direction: 1 });
-                        didShoot = true;
-                     }
-                     if (isDual && enemiesLeft) {
-                        nextProjectiles.push({ id: `proj-${now}-${r}-${c}-L`, row: r, x: c - 0.5, damage: petConfig.damage, variant: variant, direction: -1 });
-                        didShoot = true;
-                     }
-                     if (didShoot) {
-                        pet = { ...pet, lastActionTime: now };
-                        nextGrid[r][c] = pet;
-                     }
-                 }
-             }
+            if (enemiesRight || (isDual && enemiesLeft)) {
+                let variant: 'bone' | 'ice' | 'fire' = 'bone';
+                if (pet.type === PetType.Slower) variant = 'ice';
+                else if (pet.type === PetType.DualShooter) variant = 'fire';
+
+                if (enemiesRight || (isDual && !enemiesLeft)) {
+                    nextProjectiles.push({ id: `proj-${now}-${r}-${c}-R`, row: r, x: c + 0.5, damage: petConfig.damage, variant, direction: 1 });
+                }
+                if (isDual && enemiesLeft) {
+                    nextProjectiles.push({ id: `proj-${now}-${r}-${c}-L`, row: r, x: c - 0.5, damage: petConfig.damage, variant, direction: -1 });
+                }
+                pet = { ...pet, lastActionTime: now };
+                nextGrid[r][c] = pet;
+            }
         }
       }
     }
 
-    // --- 5. Update Projectiles ---
-    const projectileSpeed = 6; 
-    const moveProjBase = projectileSpeed * (GAME_TICK_MS / 1000);
+    const moveProjBase = 6 * (deltaTime / 1000);
     let activeProjectiles: Projectile[] = [];
     nextProjectiles.forEach(p => {
         let currentP = { ...p };
         currentP.x += moveProjBase * currentP.direction;
         let hit = false;
-        for (let i = 0; i < nextEnemies.length; i++) {
-            const enemy = nextEnemies[i];
+        for (let enemy of nextEnemies) {
             if (enemy.row === currentP.row && Math.abs(enemy.col - currentP.x) < 0.5) {
                 enemy.health -= currentP.damage;
                 if (currentP.variant === 'ice') enemy.frozen = true;
@@ -273,23 +273,17 @@ const App: React.FC = () => {
                 break; 
             }
         }
-        if (!hit && currentP.x >= 0 && currentP.x < COLS) activeProjectiles.push(currentP);
+        if (!hit && currentP.x >= -1 && currentP.x < COLS + 1) activeProjectiles.push(currentP);
     });
     nextProjectiles = activeProjectiles;
-
-    // --- 6. Cleanup ---
     nextSuns = nextSuns.filter(s => now - s.createdAt < SUN_LIFETIME_MS);
     nextExplosions = nextExplosions.filter(e => now - e.createdAt < 500);
 
-    setGameState({
-        ...currentState,
-        grid: nextGrid, enemies: nextEnemies, projectiles: nextProjectiles, suns: nextSuns, explosions: nextExplosions, energy: nextEnergy, score: nextScore, status: nextStatus, timeRemaining: nextTimeRemaining
-    });
+    setGameState({ ...currentState, grid: nextGrid, enemies: nextEnemies, projectiles: nextProjectiles, suns: nextSuns, explosions: nextExplosions, energy: nextEnergy, score: nextScore, status: nextStatus, timeRemaining: nextTimeRemaining });
   };
 
   const handleCellClick = (r: number, c: number) => {
-      if (gameState.status !== 'PLAYING') return;
-      if (!selectedPet) return;
+      if (gameState.status !== 'PLAYING' || !selectedPet) return;
       const currentState = stateRef.current;
       if (currentState.grid[r][c]) return;
       const petConfig = PET_DATA[selectedPet];
@@ -310,12 +304,32 @@ const App: React.FC = () => {
   };
 
   const startGame = () => {
+      const audio = audioRef.current;
+      if (audio && !isMuted) {
+          if (audio.error || audio.readyState === 0) {
+              audio.load();
+          }
+          audio.currentTime = 0;
+          audio.play()
+            .then(() => { audioUnlocked.current = true; })
+            .catch(err => {
+               console.warn("音频激活失败，正在回退:", err);
+               // 如果当前是本地文件，且播放失败，手动触发切换
+               if (audio.src && audio.src.includes('bgm.mp3')) {
+                  const randomUrl = FALLBACK_PLAYLIST[Math.floor(Math.random() * FALLBACK_PLAYLIST.length)];
+                  audio.src = randomUrl;
+                  audio.load();
+                  audio.play().then(() => { audioUnlocked.current = true; }).catch(() => {});
+               }
+            });
+      }
+
       setGameState({
         grid: Array(ROWS).fill(null).map(() => Array(COLS).fill(null)),
-        enemies: [], projectiles: [], suns: [], explosions: [], energy: INIT_ENERGY_CONST, level: 1, timeRemaining: LEVEL_DURATION_MS, score: 0, status: 'PLAYING', message: '怪物来了！保护家园！'
+        enemies: [], projectiles: [], suns: [], explosions: [], energy: INIT_ENERGY_CONST, level: 1, timeRemaining: LEVEL_DURATION_MS, score: 0, status: 'PLAYING', message: '怪物来了！'
       });
-      lastSpawnTime.current = performance.now();
       lastTickTime.current = performance.now();
+      lastSpawnTime.current = performance.now();
       lastGlobalSunSpawnTime.current = performance.now();
   };
 
@@ -323,32 +337,31 @@ const App: React.FC = () => {
       setGameState(prev => ({
           ...prev, grid: Array(ROWS).fill(null).map(() => Array(COLS).fill(null)), enemies: [], projectiles: [], suns: [], explosions: [], energy: INIT_ENERGY_CONST, level: prev.level + 1, timeRemaining: LEVEL_DURATION_MS, status: 'PLAYING', message: `第 ${prev.level + 1} 关`
       }));
+      lastTickTime.current = performance.now();
       lastSpawnTime.current = performance.now();
       lastGlobalSunSpawnTime.current = performance.now();
-      lastTickTime.current = performance.now();
   };
 
   const togglePause = () => {
       if (gameState.status === 'PLAYING') {
           setGameState(prev => ({ ...prev, status: 'PAUSED' }));
           pauseStartTime.current = performance.now();
+          if (audioRef.current) audioRef.current.pause();
       } else if (gameState.status === 'PAUSED') {
           const now = performance.now();
           const pausedDuration = now - pauseStartTime.current;
           lastTickTime.current = now;
           lastSpawnTime.current += pausedDuration;
           lastGlobalSunSpawnTime.current += pausedDuration;
+          if (audioRef.current && !isMuted) {
+            audioRef.current.play().catch(() => {});
+          }
           setGameState(prev => {
               const adjustedGrid = prev.grid.map(row => row.map(cell => cell ? { ...cell, lastActionTime: cell.lastActionTime + pausedDuration } : cell));
               const adjustedEnemies = prev.enemies.map(e => ({ ...e, lastActionTime: e.lastActionTime + pausedDuration }));
               return { ...prev, grid: adjustedGrid, enemies: adjustedEnemies, status: 'PLAYING' };
           });
       }
-  };
-
-  const formatTime = (ms: number) => {
-      const seconds = Math.floor(ms / 1000);
-      return `${Math.floor(seconds / 60).toString().padStart(2, '0')}:${(seconds % 60).toString().padStart(2, '0')}`;
   };
 
   return (
@@ -359,20 +372,17 @@ const App: React.FC = () => {
             </h1>
             
             <div className="flex items-center gap-1.5 sm:gap-3 md:gap-6 flex-shrink-0">
-                 {/* Music Toggle */}
-                 <Button 
-                    onClick={() => setIsMuted(!isMuted)} 
-                    className="!p-1.5 sm:!p-2 !rounded-full !h-8 !w-8 sm:!h-10 sm:!w-10 flex items-center justify-center !bg-sky-100/50 hover:!bg-sky-200/50 !border-none !shadow-none"
-                 >
+                 <Button onClick={() => {
+                     setIsMuted(!isMuted);
+                     if (isMuted && audioRef.current && !audioUnlocked.current) {
+                        audioRef.current.play().then(() => audioUnlocked.current = true).catch(() => {});
+                     }
+                 }} className="!p-1.5 sm:!p-2 !rounded-full !h-8 !w-8 sm:!h-10 sm:!w-10 flex items-center justify-center !bg-sky-100/50">
                     {isMuted ? <VolumeX className="w-4 h-4 sm:w-5 sm:h-5 text-gray-400"/> : <Volume2 className="w-4 h-4 sm:w-5 sm:h-5 text-sky-500 animate-pulse-short"/>}
                  </Button>
 
                  {(gameState.status === 'PLAYING' || gameState.status === 'PAUSED') && (
-                     <Button 
-                        onClick={togglePause} 
-                        className="!p-1.5 sm:!p-2 !rounded-full !h-8 !w-8 sm:!h-10 sm:!w-10 flex items-center justify-center" 
-                        variant="secondary"
-                     >
+                     <Button onClick={togglePause} className="!p-1.5 sm:!p-2 !rounded-full !h-8 !w-8 sm:!h-10 sm:!w-10 flex items-center justify-center" variant="secondary">
                         {gameState.status === 'PAUSED' ? <Play className="fill-current w-4 h-4 sm:w-5 sm:h-5"/> : <Pause className="fill-current w-4 h-4 sm:w-5 sm:h-5"/>}
                      </Button>
                  )}
@@ -382,19 +392,10 @@ const App: React.FC = () => {
                     <span className="whitespace-nowrap">第 {gameState.level} 关</span>
                  </div>
 
-                 <div className="flex items-center gap-1 sm:gap-2 text-gray-700 font-bold bg-white/60 px-2 sm:px-3 py-1 rounded-lg w-16 sm:w-24 justify-center text-xs sm:text-sm md:text-base">
-                    <Clock className="w-3.5 h-3.5 sm:w-5 h-5 text-blue-500" />
-                    <span className="font-mono">{formatTime(gameState.timeRemaining)}</span>
-                 </div>
-
-                 <div className="flex items-center gap-1 bg-yellow-400 text-yellow-900 px-2 sm:px-3 py-1 rounded-full font-bold shadow-sm animate-pulse-short text-xs sm:text-sm md:text-base">
+                 <div className="flex items-center gap-1 bg-yellow-400 text-yellow-900 px-2 sm:px-3 py-1 rounded-full font-bold shadow-sm text-xs sm:text-sm md:text-base">
                     <Star className="w-3 h-3 sm:w-4 h-4 fill-current" />
                     <span>{Math.floor(gameState.energy)}</span>
                  </div>
-                 
-                 {(gameState.status === 'PLAYING' || gameState.status === 'PAUSED') && (
-                     <div className="hidden lg:block font-mono text-gray-600">分数: {gameState.score}</div>
-                 )}
             </div>
         </header>
 
@@ -403,12 +404,24 @@ const App: React.FC = () => {
                 <PetSelector energy={gameState.energy} selectedPet={selectedPet} onSelect={setSelectedPet} />
             </div>
 
-            <div className="order-1 lg:order-2 flex-1 relative overflow-auto flex items-center justify-center p-4 bg-pattern">
-                 <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: 'radial-gradient(#444 1px, transparent 1px)', backgroundSize: '20px 20px' }}></div>
-                 <div ref={boardRef} className="relative bg-green-500/10 rounded-3xl border-4 border-green-500/30 shadow-2xl overflow-hidden" style={{ width: `${COLS * cellSize}px`, height: `${ROWS * cellSize}px`, minWidth: `${COLS * cellSize}px` }}>
+            <div className="order-1 lg:order-2 flex-1 relative overflow-auto p-4 bg-pattern flex items-start lg:items-center">
+                 <div 
+                    ref={boardRef} 
+                    className="relative m-auto bg-green-500/10 rounded-3xl border-4 border-green-500/30 shadow-2xl overflow-hidden flex-shrink-0" 
+                    style={{ 
+                        width: `${COLS * cellSize}px`, 
+                        height: `${ROWS * cellSize}px`,
+                        minWidth: `${COLS * cellSize}px` 
+                    }}
+                 >
+                     <div className="absolute inset-0 opacity-10 pointer-events-none" style={{ backgroundImage: 'radial-gradient(#444 1px, transparent 1px)', backgroundSize: '20px 20px' }}></div>
                      {Array.from({ length: ROWS }).map((_, r) => ( <div key={`row-${r}`} className="absolute w-full border-b border-green-700/10" style={{ top: `${(r + 1) * cellSize}px` }} /> ))}
                      {Array.from({ length: COLS }).map((_, c) => ( <div key={`col-${c}`} className="absolute h-full border-r border-green-700/10" style={{ left: `${(c + 1) * cellSize}px` }} /> ))}
-                     {gameState.grid.map((row, r) => ( row.map((cell, c) => ( <div key={`${r}-${c}`} onClick={() => handleCellClick(r, c)} className={`absolute transition-colors duration-200 cursor-pointer ${!cell && selectedPet && gameState.energy >= PET_DATA[selectedPet].cost ? 'hover:bg-green-400/30' : ''}`} style={{ width: cellSize, height: cellSize, top: r * cellSize, left: c * cellSize }} /> )) ))}
+                     
+                     {gameState.grid.map((row, r) => ( row.map((cell, c) => ( 
+                         <div key={`${r}-${c}`} onClick={() => handleCellClick(r, c)} className={`absolute transition-colors duration-200 cursor-pointer ${!cell && selectedPet && gameState.energy >= PET_DATA[selectedPet].cost ? 'hover:bg-green-400/30' : ''}`} style={{ width: cellSize, height: cellSize, top: r * cellSize, left: c * cellSize }} /> 
+                     )) ))}
+                     
                      {gameState.grid.flat().map((entity) => ( entity && <EntityComponent key={entity.id} entity={entity} cellSize={cellSize} /> ))}
                      {gameState.enemies.map(enemy => ( <EntityComponent key={enemy.id} entity={enemy} cellSize={cellSize} /> ))}
                      {gameState.suns.map(sun => ( <SunComponent key={sun.id} sun={sun} cellSize={cellSize} onClick={handleCollectSun} /> ))}
@@ -423,16 +436,16 @@ const App: React.FC = () => {
                 <div className="bg-white p-8 rounded-3xl shadow-2xl text-center max-w-md mx-4 animate-bounce-in">
                     <div className="text-6xl mb-4">🏠⚔️👾</div>
                     <h2 className="text-3xl font-black text-gray-800 mb-2">萌宠保卫战</h2>
-                    <p className="text-gray-600 mb-6">有些怪物想偷走我们的零食！<br/>放置萌宠来阻止它们！</p>
+                    <p className="text-gray-600 mb-6 font-medium">守护家园免受调皮怪物的侵扰！</p>
                     <div className="bg-blue-50 p-4 rounded-xl mb-6 text-sm text-left">
-                        <p>🎯 规则：</p>
+                        <p className="font-bold text-blue-800">🎯 玩法：</p>
                         <ul className="list-disc list-inside mt-2 space-y-1 text-gray-700">
-                           <li>共有 {MAX_LEVELS} 个关卡，每关坚持 {LEVEL_DURATION_MS / 60000} 分钟</li>
-                           <li>每过一关，怪物的速度增加 5%</li>
-                           <li>收集阳光召唤萌宠</li>
+                           <li>抵挡所有波次的怪物进攻</li>
+                           <li>收集掉落的“阳光”来部署萌宠</li>
+                           <li>点击棋盘格子放置宠物</li>
                         </ul>
                     </div>
-                    <Button onClick={startGame} className="w-full text-xl py-4" variant="success">开始游戏</Button>
+                    <Button onClick={startGame} className="w-full text-xl py-4" variant="success">开始保卫家园</Button>
                 </div>
             </div>
         )}
@@ -441,8 +454,8 @@ const App: React.FC = () => {
             <div className="absolute inset-0 z-40 bg-black/20 backdrop-blur-sm flex items-center justify-center">
                 <div className="bg-white p-6 rounded-3xl shadow-2xl text-center animate-bounce-in">
                     <div className="text-5xl mb-4">⏸️</div>
-                    <h2 className="text-2xl font-black text-gray-800 mb-4">游戏暂停</h2>
-                    <Button onClick={togglePause} className="w-48 text-lg" variant="success">继续游戏</Button>
+                    <h2 className="text-2xl font-black text-gray-800 mb-4">游戏暂停中</h2>
+                    <Button onClick={togglePause} className="w-48 text-lg" variant="success">继续战斗</Button>
                 </div>
             </div>
         )}
@@ -451,9 +464,9 @@ const App: React.FC = () => {
             <div className="absolute inset-0 z-50 bg-red-900/60 backdrop-blur-md flex items-center justify-center">
                 <div className="bg-white p-8 rounded-3xl shadow-2xl text-center max-w-md mx-4 border-4 border-red-200">
                     <div className="text-6xl mb-4">😭</div>
-                    <h2 className="text-3xl font-black text-red-600 mb-2">哎呀！失败了</h2>
-                    <p className="text-gray-600 mb-6">怪物冲进了家里...<br/>你坚持到了第 {gameState.level} 关</p>
-                    <Button onClick={startGame} className="w-full text-xl py-4" variant="primary">重新开始</Button>
+                    <h2 className="text-3xl font-black text-red-600 mb-2">游戏结束</h2>
+                    <p className="text-gray-600 mb-6">萌宠们战败了，再来一局试试吧！</p>
+                    <Button onClick={startGame} className="w-full text-xl py-4" variant="primary">再次尝试</Button>
                 </div>
             </div>
         )}
@@ -462,8 +475,8 @@ const App: React.FC = () => {
             <div className="absolute inset-0 z-50 bg-blue-900/60 backdrop-blur-md flex items-center justify-center">
                 <div className="bg-white p-8 rounded-3xl shadow-2xl text-center max-w-md mx-4 border-4 border-blue-200 animate-bounce-in">
                     <div className="text-6xl mb-4">🎉</div>
-                    <h2 className="text-3xl font-black text-blue-600 mb-2">关卡完成！</h2>
-                    <p className="text-gray-600 mb-6">太棒了！你成功守住了第 {gameState.level} 关！<br/>下一关怪物速度将提升 5%！<br/>萌宠和阳光将重置。</p>
+                    <h2 className="text-3xl font-black text-blue-600 mb-2">关卡大捷！</h2>
+                    <p className="text-gray-600 mb-6">你守住了第 {gameState.level} 关！<br/>下一关怪物速度将提升 {SPEED_INCREMENT * 100}%</p>
                     <Button onClick={nextLevel} className="w-full text-xl py-4" variant="success">进入下一关</Button>
                 </div>
             </div>
@@ -473,10 +486,10 @@ const App: React.FC = () => {
             <div className="absolute inset-0 z-50 bg-yellow-500/60 backdrop-blur-md flex items-center justify-center">
                 <div className="bg-white p-8 rounded-3xl shadow-2xl text-center max-w-md mx-4 border-4 border-yellow-200 animate-bounce-in">
                     <div className="text-6xl mb-4">🏆</div>
-                    <h2 className="text-3xl font-black text-yellow-600 mb-2">大获全胜！</h2>
-                    <p className="text-gray-600 mb-6">你是真正的萌宠守护神！<br/>所有的怪物都被赶跑了！</p>
-                    <p className="text-2xl font-bold text-gray-800 mb-8">最终得分: {gameState.score}</p>
-                    <Button onClick={startGame} className="w-full text-xl py-4" variant="primary">再玩一次</Button>
+                    <h2 className="text-3xl font-black text-yellow-600 mb-2">恭喜通关！</h2>
+                    <p className="text-gray-600 mb-6">你是最棒的萌宠守护者！</p>
+                    <p className="text-2xl font-bold text-gray-800 mb-8">最终积分: {gameState.score}</p>
+                    <Button onClick={startGame} className="w-full text-xl py-4" variant="primary">重头再战</Button>
                 </div>
             </div>
         )}
