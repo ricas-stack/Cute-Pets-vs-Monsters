@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { ROWS, COLS, GameState, Entity, PetType, EnemyType, Projectile, SunEntity, Explosion } from './types';
 import { PET_DATA, ENEMY_CONFIG, INITIAL_ENERGY as INIT_ENERGY_CONST, GAME_TICK_MS, ENERGY_DROP_VALUE, SUN_LIFETIME_MS, SUN_SCORE_VALUE, SUN_SPAWN_MIN_MS, SUN_SPAWN_MAX_MS, LEVEL_DURATION_MS, MAX_LEVELS, SPEED_INCREMENT } from './constants';
@@ -7,7 +8,7 @@ import { ProjectileComponent } from './components/ProjectileComponent';
 import { SunComponent } from './components/SunComponent';
 import { ExplosionComponent } from './components/ExplosionComponent';
 import { PetSelector } from './components/PetSelector';
-import { Star, Trophy, Pause, Play, Volume2, VolumeX } from 'lucide-react';
+import { Star, Trophy, Pause, Play, Volume2, VolumeX, Clock } from 'lucide-react';
 
 // 联网备用背景音乐列表 - 风格贴近用户提供的 Soundstripe 链接 (欢快、趣味的游戏循环)
 const FALLBACK_PLAYLIST = [
@@ -364,6 +365,13 @@ const App: React.FC = () => {
       }
   };
 
+  const formatTime = (ms: number) => {
+    const totalSeconds = Math.ceil(ms / 1000);
+    const minutes = Math.floor(totalSeconds / 60);
+    const seconds = totalSeconds % 60;
+    return `${minutes.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
+  };
+
   return (
     <div className="w-full h-screen bg-sky-100 flex flex-col overflow-hidden relative select-none">
         <header className="flex-none h-16 bg-white/50 backdrop-blur-md border-b border-white/60 flex items-center justify-between px-3 sm:px-6 z-30 gap-2">
@@ -391,6 +399,15 @@ const App: React.FC = () => {
                     <Trophy className="w-3.5 h-3.5 sm:w-5 h-5 text-purple-500" />
                     <span className="whitespace-nowrap">第 {gameState.level} 关</span>
                  </div>
+
+                 {gameState.status === 'PLAYING' && (
+                    <div className="flex items-center gap-1 sm:gap-2 text-gray-700 font-bold bg-white/60 px-2 sm:px-3 py-1 rounded-lg text-xs sm:text-sm md:text-base border border-sky-200">
+                        <Clock className={`w-3.5 h-3.5 sm:w-5 h-5 ${gameState.timeRemaining < 30000 ? 'text-red-500 animate-pulse' : 'text-sky-500'}`} />
+                        <span className={`whitespace-nowrap tabular-nums ${gameState.timeRemaining < 30000 ? 'text-red-600' : ''}`}>
+                            {formatTime(gameState.timeRemaining)}
+                        </span>
+                    </div>
+                 )}
 
                  <div className="flex items-center gap-1 bg-yellow-400 text-yellow-900 px-2 sm:px-3 py-1 rounded-full font-bold shadow-sm text-xs sm:text-sm md:text-base">
                     <Star className="w-3 h-3 sm:w-4 h-4 fill-current" />
@@ -443,6 +460,7 @@ const App: React.FC = () => {
                            <li>抵挡所有波次的怪物进攻</li>
                            <li>收集掉落的“阳光”来部署萌宠</li>
                            <li>点击棋盘格子放置宠物</li>
+                           <li>坚持完 3 分钟即获胜！</li>
                         </ul>
                     </div>
                     <Button onClick={startGame} className="w-full text-xl py-4" variant="success">开始保卫家园</Button>
